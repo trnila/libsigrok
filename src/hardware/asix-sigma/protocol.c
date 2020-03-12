@@ -134,18 +134,6 @@ static int sigma_read_register(uint8_t reg, uint8_t *data, size_t len,
 	return sigma_read(data, len, devc);
 }
 
-static uint8_t sigma_get_register(uint8_t reg, struct dev_context *devc)
-{
-	uint8_t value;
-
-	if (1 != sigma_read_register(reg, &value, 1, devc)) {
-		sr_err("sigma_get_register: 1 byte expected");
-		return 0;
-	}
-
-	return value;
-}
-
 static int sigma_read_pos(uint32_t *stoppos, uint32_t *triggerpos,
 			  struct dev_context *devc)
 {
@@ -1016,10 +1004,6 @@ static int download_capture(struct sr_dev_inst *sdi)
 	devc = sdi->priv;
 	dl_events_in_line = 64 * 7;
 
-	dram_line = g_try_malloc0(chunks_per_read * sizeof(*dram_line));
-	if (!dram_line)
-		return FALSE;
-
 	sr_info("Downloading sample data.");
 	devc->state.state = SIGMA_DOWNLOAD;
 
@@ -1031,7 +1015,10 @@ static int download_capture(struct sr_dev_inst *sdi)
 	 */
 	sigma_set_register(WRITE_MODE, WMR_FORCESTOP | WMR_SDRAMWRITEEN, devc);
 	do {
-		modestatus = sigma_get_register(READ_MODE, devc);
+		if (1 != sigma_read_register(READ_MODE, &modestatus, 1, devc)) {
+			sr_err("sigma: failed while waiting for RMR_POSTTRIGGERED bit");
+			return FALSE;
+		}
 	} while (!(modestatus & RMR_POSTTRIGGERED));
 
 	/* Set SDRAM Read Enable. */
@@ -1041,7 +1028,10 @@ static int download_capture(struct sr_dev_inst *sdi)
 	sigma_read_pos(&stoppos, &triggerpos, devc);
 
 	/* Check if trigger has fired. */
-	modestatus = sigma_get_register(READ_MODE, devc);
+	if (1 != sigma_read_register(READ_MODE, &modestatus, 1, devc)) {
+		sr_err("sigma: failed to read READ_MODE register");
+		return FALSE;
+	}
 	trg_line = ~0;
 	trg_event = ~0;
 	if (modestatus & RMR_TRIGGERED) {
@@ -1050,6 +1040,11 @@ static int download_capture(struct sr_dev_inst *sdi)
 	}
 
 	devc->sent_samples = 0;
+
+	dram_line = g_try_malloc0(chunks_per_read * sizeof(*dram_line));
+	if (!dram_line)
+		return FALSE;
+
 
 	/*
 	 * Determine how many "DRAM lines" of 1024 bytes each we need to
